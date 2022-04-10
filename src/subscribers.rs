@@ -1,31 +1,33 @@
-use crate::Subscriber;
+use alloc::vec;
+use alloc::vec::Vec;
+
+use crate::{Subscriber, SubscriberError, SubscriberEvent};
 
 #[derive(Debug)]
 pub struct Subscribers<Sub> {
     subscribers: Vec<Sub>,
 }
 
-// pub trait CallBack<Event>:
-//     Fn(Event) + std::panic::UnwindSafe + std::panic::RefUnwindSafe + std::fmt::Debug
-// {
-// }
-
 impl<Sub> Subscribers<Sub> {
-    pub fn new() -> Self {
+    pub fn new(sub_count: usize) -> Self {
         Self {
-            subscribers: Vec::with_capacity(3),
+            subscribers: Vec::with_capacity(sub_count),
         }
     }
 
-    pub fn push<Event: Clone, Error: std::error::Error>(&mut self, subscriber: Sub)
+    pub fn push<Event, Error>(&mut self, subscriber: Sub)
     where
+        Event: SubscriberEvent,
+        Error: SubscriberError,
         Sub: Subscriber<Event, Error>,
     {
         self.subscribers.push(subscriber);
     }
 
-    pub fn notify<Event: Clone, Error: std::error::Error>(&self, event: Event) -> Option<Vec<Error>>
+    pub fn notify<Event, Error>(&self, event: Event) -> Option<Vec<Error>>
     where
+        Event: SubscriberEvent,
+        Error: SubscriberError,
         Sub: Subscriber<Event, Error>,
     {
         if self.subscribers.len() == 1 {

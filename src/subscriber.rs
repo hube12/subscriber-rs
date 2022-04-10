@@ -1,6 +1,8 @@
-pub trait Subscriber<Event, Error: std::error::Error> {
-    fn new<T: 'static + Fn(Event) + std::panic::UnwindSafe + std::panic::RefUnwindSafe>(
-        callback: T,
-    ) -> Self;
+pub trait Subscriber<Event, Error>: Send
+where
+    Error: crate::SubscriberError,
+    Event: crate::SubscriberEvent,
+{
+    fn new<T: crate::SubscriberCallback<Event> + 'static>(callback: T) -> Self;
     fn notify(&self, event: Event) -> Result<(), Error>;
 }

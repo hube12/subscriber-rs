@@ -6,9 +6,15 @@ description = "A subscriber framework"
 repository = "https://github.com/hube12/subscriber-rs"
 license = "MIT OR Apache-2.0"
 
-[lib]
-name = "subscriber_rs"
-crate-type = ["rlib", "cdylib", "staticlib"]
+[features]
+default = ["std"]
+std = ["futures/std", "alloc"]
+alloc = []
 
 [dependencies]
+futures = { version = "0.3", optional = true }
+tokio = {version="1.17.0",features=["full"]}
+log = "0.4.16"
+
+[dev-dependencies]
 anyhow = "1.0.56"

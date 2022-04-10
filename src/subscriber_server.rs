@@ -1,16 +1,17 @@
-use std::collections::{HashMap, VecDeque};
-use std::fmt::Debug;
-use std::hash::Hash;
+use alloc::collections::{BTreeMap, VecDeque};
+use core::borrow::BorrowMut;
 
-use crate::subscriber::Subscriber;
-use crate::subscriber_config::SubscriberConfig;
-use crate::subscribers::Subscribers;
+use futures::channel::mpsc::Receiver;
 
-#[derive(Debug)]
+use crate::{
+    Subscriber, SubscriberCallback, SubscriberConfig, SubscriberError, SubscriberEvent,
+    SubscriberEventType, Subscribers,
+};
+
 pub struct SubscriberServer<Type, Event, Config, Sub> {
-    store: HashMap<Type, VecDeque<Event>>,
+    store: BTreeMap<Type, VecDeque<Event>>,
     config: Config,
-    subscribers: HashMap<Type, Subscribers<Sub>>,
+    subscribers: BTreeMap<Type, crate::Subscribers<Sub>>,
 }
 
 impl<Type, Event, Config, Sub> Default for SubscriberServer<Type, Event, Config, Sub>
@@ -22,29 +23,86 @@ where
     }
 }
 
-impl<Type, Event, Config, Sub> SubscriberServer<Type, Event, Config, Sub> {
+impl<Type, Event, Config, Sub> SubscriberServer<Type, Event, Config, Sub>
+where
+    Config: SubscriberConfig,
+{
     pub fn new(config: Config) -> Self {
         Self {
-            store: HashMap::with_capacity(16 + 2 + 1 + 1),
+            store: BTreeMap::new(),
             config,
-            subscribers: HashMap::with_capacity(10),
+            subscribers: BTreeMap::new(),
         }
     }
 
-    pub fn run(self) {
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+}
+
+impl<Type, Event, Config, Sub> SubscriberServer<Type, Event, Config, Sub>
+where
+    Event: SubscriberEvent<Type = Type>,
+    Config: SubscriberConfig,
+    Type: SubscriberEventType,
+{
+    pub fn run<Error, Callback>(
+        mut self,
+        mut recv_event: Receiver<Event>,
+        mut recv_subscribe: Receiver<(Type, Callback)>,
+    ) where
+        Error: SubscriberError,
+        Sub: Subscriber<Event, Error>,
+        Callback: SubscriberCallback<Event> + 'static,
+    {
         loop {
             // Do subscription
+            while let Ok(msg) = recv_subscribe.try_next() {
+                match msg {
+                    None => {
+                        log::warn!("Channel is closed");
+                        break;
+                    }
+                    Some((event_type, callback)) => {
+                        if let Err(e) = self.borrow_mut().subscribe(event_type, callback) {
+                            log::warn!(
+                                "Could not subscribe, this can not be recovered yet, {:?}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+            while let Ok(msg) = recv_event.try_next() {
+                match msg {
+                    None => {
+                        log::warn!("Channel is closed");
+                        break;
+                    }
+                    Some(event) => {
+                        if event.should_kill() {
+                            return;
+                        }
+                        self.borrow_mut().send(event);
+                    }
+                }
+            }
         }
     }
 }
 
-impl<Type, Event: Clone, Config: SubscriberConfig, Sub> SubscriberServer<Type, Event, Config, Sub> {
-    pub fn send<Error: std::error::Error>(&mut self, event_type: Type, event: Event)
+impl<Type, Event, Config, Sub> SubscriberServer<Type, Event, Config, Sub>
+where
+    Type: SubscriberEventType,
+    Event: SubscriberEvent<Type = Type>,
+    Config: SubscriberConfig,
+{
+    pub fn send<Error>(&mut self, event: Event)
     where
-        Event: Clone,
+        Error: SubscriberError,
         Sub: Subscriber<Event, Error>,
-        Type: Hash + Eq,
     {
+        let event_type = event.get_type();
         if let Some(subscribers) = self.subscribers.get(&event_type) {
             subscribers.notify(event);
         } else {
@@ -54,22 +112,27 @@ impl<Type, Event: Clone, Config: SubscriberConfig, Sub> SubscriberServer<Type, E
                 .push_back(event)
         }
     }
+}
 
-    pub fn subscribe<
-        T: 'static + Fn(Event) + std::panic::UnwindSafe + std::panic::RefUnwindSafe,
-        Error: std::error::Error,
-    >(
+impl<Type, Event, Config, Sub> SubscriberServer<Type, Event, Config, Sub>
+where
+    Type: SubscriberEventType,
+    Event: SubscriberEvent,
+    Config: SubscriberConfig,
+{
+    pub fn subscribe<Callback, Error>(
         &mut self,
-        event: Type,
-        callback: T,
+        event_type: Type,
+        callback: Callback,
     ) -> Result<(), Error>
     where
+        Error: SubscriberError,
         Sub: Subscriber<Event, Error>,
-        Type: Hash + Eq,
+        Callback: SubscriberCallback<Event> + 'static,
     {
         self.subscribers
-            .entry(event)
-            .or_insert(Subscribers::new())
+            .entry(event_type)
+            .or_insert(Subscribers::new(self.config.subscriber_count()))
             .push(Subscriber::new(callback));
         Ok(())
     }

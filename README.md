@@ -5,6 +5,13 @@
 [![CI](https://github.com/hube12/subscriber-rs/workflows/CI/badge.svg)](https://github.com/hube12/subscriber-rs/actions)
 [![Coverage Status](https://coveralls.io/repos/github/hube12/subscriber-rs/badge.svg?branch=main)](https://coveralls.io/github/hube12/subscriber-rs?branch=main)
 
+A simple subscriber framework see `examples/simple.rs` for How-To.
+
+This crates solves the problems of how to register a callback (maybe FFI one) and send in an event loop different events.
+
+
+Note: the no_std part is not working atm and we depends of tokio for the executor, we will switch to agnostik later on.
+
 ## Installation
 
 ### Cargo

@@ -1,144 +1,143 @@
-use anyhow::anyhow;
 use std::fmt::{Debug, Display, Formatter};
 use std::panic::{catch_unwind, UnwindSafe};
-use subscriber_rs::{SubscriberServer};
+use std::time::Duration;
 
-fn main() {
-    let mut server: SubscriberServer<
-        EventType,
-        SubscriberEvent,
-        SubscriberConfig,
-        Subscriber<SubscriberEvent>,
-    > = SubscriberServer::new(SubscriberConfig::default());
-    // server.run()
-    server.subscribe(EventType::ErrorProcesses, |e| println!("{:?}", e));
-    server.send(
-        EventType::ErrorProcesses,
-        SubscriberEvent::ErrorProcesses(String::from("test")),
+use anyhow::anyhow;
+
+use subscriber_rs::{
+    SubscribeHandle, Subscriber, SubscriberCallback, SubscriberError, SubscriberEvent,
+    SubscriberEventType, SubscriberServer, SubscriberServerHandle,
+};
+
+#[tokio::main]
+async fn main() {
+    let mut server: SubscriberServer<SEventType, SEvent, SubscriberConfig, Sub<SEvent>> =
+        SubscriberServer::new(SubscriberConfig::default());
+    let mut handle = SubscriberServerHandle::new(server, &tokio::runtime::Handle::current());
+    let f: fn(SEvent) = |e| println!("FROM CALLBACK : {:?}", e);
+    let _ = dbg!(handle.subscribe(SEventType::ErrorParsing, f).await);
+    let _ = dbg!(
+        handle
+            .send(SEvent::ErrorParsing(String::from("test")))
+            .await
+    );
+    let _ = dbg!(handle.send(SEvent::Kill).await);
+    let _ = dbg!(handle.stop_handle());
+    let _ = dbg!(
+        handle
+            .send(SEvent::ErrorParsing(String::from("should fail")))
+            .await
+    );
+    let _ = dbg!(
+        handle
+            .send(SEvent::ErrorParsing(String::from("should fail")))
+            .await
+    );
+    let _ = dbg!(
+        handle
+            .send(SEvent::ErrorParsing(String::from("should fail")))
+            .await
     );
 }
 
 #[derive(Clone, Debug)]
-pub enum SubscriberEvent {
-    ErrorChannel(String),
-    ErrorProcesses(String),
-    Event(String),
-    Result(String),
+pub enum SEvent {
+    ErrorIO((u32, String)),
+    ErrorParsing(String),
+    Event((u16, String)),
+    Kill,
+}
+impl UnwindSafe for SEvent {}
+
+impl SubscriberCallback<SEvent> for fn(SEvent) {}
+
+impl SubscriberEvent for SEvent {
+    type Type = SEventType;
+
+    fn should_kill(&self) -> bool {
+        matches!(self.get_type(), Self::Type::Kill)
+    }
+
+    fn get_type(&self) -> Self::Type {
+        match self {
+            SEvent::ErrorIO((code, _)) => Self::Type::ErrorIO(*code),
+            SEvent::ErrorParsing(_) => Self::Type::ErrorParsing,
+            SEvent::Event((event_type, _)) => Self::Type::Event(*event_type),
+            SEvent::Kill => Self::Type::Kill,
+        }
+    }
 }
 
-impl UnwindSafe for SubscriberEvent {}
-
-#[derive(Hash, PartialOrd, PartialEq, Eq, Debug)]
-pub enum EventType {
-    /// Errors in channels map to (0,0xf(
-    ErrorChannels(u8),
-    /// Error in processes map to 0xf
-    ErrorProcesses,
-    /// ResultMessages map to 0x10
-    ResultMessages,
-    /// Events map to (0x7fff,0xffff)
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum SEventType {
+    ErrorIO(u32),
     Event(u16),
+    ErrorParsing,
+    Kill,
 }
-
-impl EventType {
-    const EVENT_MASK: u16 = 0x7FFF;
-    const ERROR_CHANNELS_MASK: u16 = 0xF;
-    const ERROR_PROCESSES: u16 = 0x10;
-    const RESULT_MESSAGES: u16 = 0x11;
-}
+impl SubscriberEventType for SEventType {}
 
 #[derive(Debug)]
 pub struct SubscriberConfig {
     channel_size: u32,
+    subscriber_count: u32,
 }
 
 impl subscriber_rs::SubscriberConfig for SubscriberConfig {
     fn subscriber_count(&self) -> usize {
-        todo!()
+        self.subscriber_count as usize
     }
 
     fn channel_size(&self) -> usize {
-        todo!()
+        self.channel_size as usize
     }
 }
 
 impl Default for SubscriberConfig {
     fn default() -> Self {
-        Self { channel_size: 1024 }
-    }
-}
-
-impl TryFrom<u16> for EventType {
-    type Error = anyhow::Error;
-
-    fn try_from(n: u16) -> Result<Self, Self::Error> {
-        Ok(match n {
-            0..=Self::ERROR_CHANNELS_MASK => {
-                Self::ErrorChannels((n & Self::ERROR_CHANNELS_MASK) as u8)
-            }
-            Self::ERROR_PROCESSES => Self::ErrorProcesses,
-            Self::RESULT_MESSAGES => Self::ResultMessages,
-            // Not used range
-            Self::EVENT_MASK..=u16::MAX => Self::Event(n & Self::EVENT_MASK),
-            _ => {
-                return Err(anyhow!("Not a valid Event type"));
-            }
-        })
-    }
-}
-
-impl Into<u16> for EventType {
-    fn into(self) -> u16 {
-        match self {
-            EventType::ErrorChannels(side) => side.into(),
-            EventType::ErrorProcesses => Self::ERROR_PROCESSES,
-            EventType::ResultMessages => Self::RESULT_MESSAGES,
-            EventType::Event(n) => n | Self::EVENT_MASK,
+        Self {
+            channel_size: 1024,
+            subscriber_count: 3,
         }
     }
 }
 
-pub struct Subscriber<Event> {
-    callback: Box<dyn Fn(Event) + std::panic::UnwindSafe + std::panic::RefUnwindSafe>,
+pub struct Sub<Event> {
+    callback: Box<dyn SubscriberCallback<Event>>,
 }
 
 #[derive(Debug)]
-pub struct MyError {
-    msg: String,
+pub struct SError {
+    error: anyhow::Error,
 }
 
-impl From<String> for MyError {
-    fn from(msg: String) -> Self {
-        Self { msg }
+impl SubscriberError for SError {}
+
+impl From<anyhow::Error> for SError {
+    fn from(error: anyhow::Error) -> Self {
+        Self { error }
     }
 }
 
-impl Display for MyError {
+impl Display for SError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.msg)
+        write!(f, "{}", self.error)
     }
 }
 
-impl std::error::Error for MyError {}
+impl std::error::Error for SError {}
 
-impl subscriber_rs::Subscriber<SubscriberEvent, MyError> for Subscriber<SubscriberEvent> {
-    fn new<
-        T: 'static + Fn(SubscriberEvent) + std::panic::UnwindSafe + std::panic::RefUnwindSafe,
-    >(
-        callback: T,
-    ) -> Self {
+impl Subscriber<SEvent, SError> for Sub<SEvent> {
+    fn new<T: SubscriberCallback<SEvent> + 'static>(callback: T) -> Self {
         Self {
             callback: Box::new(callback),
         }
     }
 
-    fn notify(&self, event: SubscriberEvent) -> Result<(), MyError> {
+    fn notify(&self, event: SEvent) -> Result<(), SError> {
         match catch_unwind(move || (self.callback)(event)) {
             Ok(..) => Ok(()),
-            Err(e) => Err(MyError::from(format!(
-                "Error while calling callback: {:?}",
-                e
-            ))),
+            Err(e) => Err(anyhow!(format!("Error while calling callback: {:?}", e)).into()),
         }
     }
 }
